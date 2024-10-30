@@ -1,4 +1,3 @@
-```
 # Web Application Project
 
 This project is part of a LinkedIn course introducing Kubernetes. The course uses a web application as a sample project, demonstrating the transition from Docker to Kubernetes on AWS EKS.
@@ -37,4 +36,3 @@ The project is intended to be deployed on AWS EKS, utilizing Kubernetes for mana
 ## Conclusion
 
 This project serves as a practical introduction to deploying web applications on Kubernetes, specifically on AWS EKS. By following the course, you will gain hands-on experience in container orchestration and cloud deployment strategies.
-```
