@@ -11,13 +11,19 @@ KIND_BINARY = ./kind
 KIND_URL = https://kind.sigs.k8s.io/dl/v$(KIND_VERSION)/kind-$(PLATFORM_OS)-$(PLATFORM_ARCH)
 INSTALL_PATH = /usr/local/bin/kind
 KIND_CLUSTER_NAME = explorecalifornia
+KIND_CONFIG_FILE = kind-config.yaml
 
+# Registry configuration
+REGISTRY_NAME := local-registry
+REGISTRY_PORT := 6000
 
 # Check if container is running
 CONTAINER_RUNNING := $(shell docker ps --format '{{.Names}}' | grep -q '^$(CONTAINER_NAME)$$' && echo 1 || echo 0)
 
 # Phony targets (targets that don't create files)
-.PHONY: run_website stop_website status install_kind install_kubectl create_kind_cluster delete_kind_cluster
+.PHONY: help run_website stop_website status_website kind_install kind_cluster_create \
+	kind_cluster_delete registry-create registry-delete registry-status \
+	registry-test kind_config_generate kind_config_clean registry_connect
 
 run_website:
 ifeq ($(CONTAINER_RUNNING),1)
@@ -36,7 +42,7 @@ else
 	@echo "Container '$(CONTAINER_NAME)' is not running"
 endif
 
-status:
+status_website:
 ifeq ($(CONTAINER_RUNNING),1)
 	@echo "Container '$(CONTAINER_NAME)' is running on port $(HOST_PORT)"
 else
@@ -45,7 +51,7 @@ endif
 
 KIND_INSTALLED := $(shell which kind 2>/dev/null)
 
-install_kind:
+kind_install:
 ifdef KIND_INSTALLED
 	@echo "Kind is already installed at: $(KIND_INSTALLED)"
 	@kind --version
@@ -72,28 +78,112 @@ endif
 
 KUBECTL_INSTALLED := $(shell which kubectl 2>/dev/null)
 
-install_kubectl:
+kubectl_install:
 ifdef KUBECTL_INSTALLED
 	@echo "Kubectl is already installed at: $(KIND_INSTALLED)"
-	@kubectl version
+	kubectl version --client
 else
 	@echo "Installing kubectl with homebrew"
 	@brew install kubectl
 endif
 
+# Create local registry
+registry_create:
+	@if [ -z "$$(docker ps -q -f name=$(REGISTRY_NAME))" ]; then \
+		echo "Creating local registry container..."; \
+		docker run -d \
+			--name $(REGISTRY_NAME) \
+			--restart=always \
+			-p $(REGISTRY_PORT):5000 \
+			registry:2; \
+		echo "Please configure Docker Desktop to allow insecure registries..."; \
+		echo "Go to Docker Desktop > Preferences > Docker Engine and add the following:"; \
+		echo '{"insecure-registries":["localhost:$(REGISTRY_PORT)"]}'; \
+		echo "Then restart Docker Desktop to apply changes."; \
+		echo "Registry created successfully at localhost:$(REGISTRY_PORT)"; \
+	else \
+		echo "Registry already exists"; \
+	fi
+	
+# Delete local registry
+registry_delete:
+	@if [ ! -z "$$(docker ps -aq -f name=$(REGISTRY_NAME))" ]; then \
+		echo "Removing registry container..."; \
+		docker rm -f $(REGISTRY_NAME); \
+		echo "Registry removed successfully"; \
+	else \
+		echo "Registry does not exist"; \
+	fi
+
+# Check registry status
+registry_status:
+	@if [ ! -z "$$(docker ps -q -f name=$(REGISTRY_NAME))" ]; then \
+		echo "Registry is running at localhost:$(REGISTRY_PORT)"; \
+		echo "Container details:"; \
+		docker ps -f name=$(REGISTRY_NAME); \
+	else \
+		echo "Registry is not running"; \
+	fi
+
+# Test registry by pushing a test image
+registry_test:
+	@echo "Testing registry with nginx image..."
+	@docker pull nginx:latest
+	@docker tag nginx:latest localhost:$(REGISTRY_PORT)/nginx:latest
+	@docker push localhost:$(REGISTRY_PORT)/nginx:latest
+	@echo "Test complete - nginx image pushed successfully"
+
 # Check if cluster exists
 KIND_CLUSTER_EXISTS := $(shell kind get clusters 2>/dev/null | grep -q '^$(KIND_CLUSTER_NAME)$$' && echo 1 || echo 0)
 
-create_kind_cluster: install_kind install_kubectl
+# Generate Kind configuration file
+kind_config_generate:
+	@if [ ! -z "$$(docker ps -q -f name=$(REGISTRY_NAME))" ]; then \
+		echo "Generating Kind configuration with local registry..." && \
+		echo "kind: Cluster" > $(KIND_CONFIG_FILE) && \
+		echo "apiVersion: kind.x-k8s.io/v1alpha4" >> $(KIND_CONFIG_FILE) && \
+		echo "name: $(KIND_CLUSTER_NAME)" >> $(KIND_CONFIG_FILE) && \
+		echo "containerdConfigPatches:" >> $(KIND_CONFIG_FILE) && \
+		echo "- |-" >> $(KIND_CONFIG_FILE) && \
+		echo '  [plugins."io.containerd.grpc.v1.cri".registry.mirrors."localhost:$(REGISTRY_PORT)"]' >> $(KIND_CONFIG_FILE) && \
+		echo '    endpoint = ["http://local-registry:5000"]' >> $(KIND_CONFIG_FILE) && \
+		echo "nodes:" >> $(KIND_CONFIG_FILE) && \
+		echo "- role: control-plane" >> $(KIND_CONFIG_FILE) && \
+		echo "Kind configuration file generated successfully!"; \
+	else \
+		echo "Local registry is not running. Skipping Kind configuration generation."; \
+	fi
+
+# Create Kind cluster
+kind_cluster_create: kind_install kubectl_install kind_config_generate
 ifeq ($(KIND_CLUSTER_EXISTS),1)
 	@echo "Kind cluster '$(KIND_CLUSTER_NAME)' already exists"
+	@kubectl get nodes
 else
 	@echo "Creating Kind cluster '$(KIND_CLUSTER_NAME)'..."
-	@kind create cluster --name $(KIND_CLUSTER_NAME)
+	@kind create cluster --config=$(KIND_CONFIG_FILE)
+	@$(MAKE) registry_connect
 	@echo "Kind cluster '$(KIND_CLUSTER_NAME)' created successfully!"
+	@kubectl get nodes
 endif
 
-delete_kind_cluster:
+# Clean up the generated Kind configuration file
+kind_config_clean:
+	@rm -f $(KIND_CONFIG_FILE)
+	@echo "Kind configuration file cleaned up."
+
+# Connect registry to Kind network (should happen after cluster creation)
+registry_connect:
+	@if [ ! -z "$$(docker network inspect kind 2>/dev/null)" ]; then \
+		echo "Connecting registry to Kind network..."; \
+		docker network connect kind $(REGISTRY_NAME) 2>/dev/null || true; \
+		echo "Registry connected to Kind network!"; \
+	else \
+		echo "Kind network does not exist. Create a cluster first."; \
+	fi
+
+# Delete Kind cluster
+kind_cluster_delete: kind_config_clean
 ifeq ($(KIND_CLUSTER_EXISTS),1)
 	@echo "Deleting Kind cluster '$(KIND_CLUSTER_NAME)'..."
 	@kind delete cluster --name $(KIND_CLUSTER_NAME)
@@ -101,3 +191,31 @@ ifeq ($(KIND_CLUSTER_EXISTS),1)
 else
 	@echo "Kind cluster '$(KIND_CLUSTER_NAME)' does not exist"
 endif
+
+# Test registry with Kind cluster
+registry_kind_test:
+	@echo "Testing registry with Kind cluster..."
+	@docker pull nginx:latest
+	@docker tag nginx:latest localhost:$(REGISTRY_PORT)/nginx:latest
+	@docker push localhost:$(REGISTRY_PORT)/nginx:latest
+	@kubectl run nginx-test --image=localhost:$(REGISTRY_PORT)/nginx:latest
+	@echo "Waiting for pod to start..."
+	@kubectl wait --for=condition=ready pod/nginx-test --timeout=60s
+	@echo "Test complete - nginx pod created successfully from local registry"
+
+help:
+	@echo "Available targets:"
+	@echo "  run_website          - Build and run the website container"
+	@echo "  stop_website         - Stop the running website container"
+	@echo "  status              - Check website container status"
+	@echo "  install_kind        - Install Kind locally"
+	@echo "  kind_config_generate         - Generate kind config for local registry"
+	@echo "  kind_config_clean   - Clean up kind config files"
+	@echo "  kind_cluster_create - Create a new Kind cluster"
+	@echo "  kind_cluster_delete - Delete the Kind cluster"
+	@echo "  registry_create     - Create local docker registry"
+	@echo "  registry_delete     - Delete local docker registry"
+	@echo "  registry_status     - Check registry status"
+	@echo "  registry_test	     - Test local docker registry"
+	@echo "  registry_kind_test  - Test kind cluster and docker local registry"
+	@echo "  help                - Show this help message"
