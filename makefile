@@ -23,7 +23,8 @@ CONTAINER_RUNNING := $(shell docker ps --format '{{.Names}}' | grep -q '^$(CONTA
 # Phony targets (targets that don't create files)
 .PHONY: help run_website stop_website status_website kind_install kind_cluster_create \
 	kind_cluster_delete registry-create registry-delete registry-status \
-	registry-test kind_config_generate kind_config_clean registry_connect
+	registry-test kind_config_generate kind_config_clean registry_connect push_website \
+	kind_install_ingress
 
 run_website:
 ifeq ($(CONTAINER_RUNNING),1)
@@ -133,13 +134,19 @@ registry_test:
 	@docker push localhost:$(REGISTRY_PORT)/nginx:latest
 	@echo "Test complete - nginx image pushed successfully"
 
+# Push explorecalifornia.com to local registry
+push_website:
+	@echo "Push explorecalifornia.com image to local registry"
+	@docker tag $(IMAGE_NAME) localhost:$(REGISTRY_PORT)/$(IMAGE_NAME)
+	@docker push localhost:$(REGISTRY_PORT)/$(IMAGE_NAME)
+
 # Check if cluster exists
 KIND_CLUSTER_EXISTS := $(shell kind get clusters 2>/dev/null | grep -q '^$(KIND_CLUSTER_NAME)$$' && echo 1 || echo 0)
 
 # Generate Kind configuration file
 kind_config_generate:
 	@if [ ! -z "$$(docker ps -q -f name=$(REGISTRY_NAME))" ]; then \
-		echo "Generating Kind configuration with local registry..." && \
+		echo "Generating Kind configuration with local registry and ingress support..." && \
 		echo "kind: Cluster" > $(KIND_CONFIG_FILE) && \
 		echo "apiVersion: kind.x-k8s.io/v1alpha4" >> $(KIND_CONFIG_FILE) && \
 		echo "name: $(KIND_CLUSTER_NAME)" >> $(KIND_CONFIG_FILE) && \
@@ -149,10 +156,34 @@ kind_config_generate:
 		echo '    endpoint = ["http://local-registry:5000"]' >> $(KIND_CONFIG_FILE) && \
 		echo "nodes:" >> $(KIND_CONFIG_FILE) && \
 		echo "- role: control-plane" >> $(KIND_CONFIG_FILE) && \
+		echo "  kubeadmConfigPatches:" >> $(KIND_CONFIG_FILE) && \
+		echo "  - |-" >> $(KIND_CONFIG_FILE) && \
+		echo "    kind: InitConfiguration" >> $(KIND_CONFIG_FILE) && \
+		echo "    nodeRegistration:" >> $(KIND_CONFIG_FILE) && \
+		echo "      kubeletExtraArgs:" >> $(KIND_CONFIG_FILE) && \
+		echo '        node-labels: "ingress-ready=true"' >> $(KIND_CONFIG_FILE) && \
+		echo "  extraPortMappings:" >> $(KIND_CONFIG_FILE) && \
+		echo "  - containerPort: 80" >> $(KIND_CONFIG_FILE) && \
+		echo "    hostPort: 80" >> $(KIND_CONFIG_FILE) && \
+		echo "    protocol: TCP" >> $(KIND_CONFIG_FILE) && \
+		echo "  - containerPort: 443" >> $(KIND_CONFIG_FILE) && \
+		echo "    hostPort: 443" >> $(KIND_CONFIG_FILE) && \
+		echo "    protocol: TCP" >> $(KIND_CONFIG_FILE) && \
 		echo "Kind configuration file generated successfully!"; \
 	else \
 		echo "Local registry is not running. Skipping Kind configuration generation."; \
 	fi
+
+# Add a new target to install NGINX Ingress Controller
+kind_install_ingress:
+	@echo "Installing NGINX Ingress Controller..."
+	kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/main/deploy/static/provider/kind/deploy.yaml
+	@echo "Waiting for Ingress Controller to be ready..."
+	kubectl wait --namespace ingress-nginx \
+		--for=condition=ready pod \
+		--selector=app.kubernetes.io/component=controller \
+		--timeout=90s
+
 
 # Create Kind cluster
 kind_cluster_create: kind_install kubectl_install kind_config_generate
@@ -207,6 +238,7 @@ help:
 	@echo "Available targets:"
 	@echo "  run_website          - Build and run the website container"
 	@echo "  stop_website         - Stop the running website container"
+	@echo "  push_website         - Push website image to local registry"
 	@echo "  status              - Check website container status"
 	@echo "  install_kind        - Install Kind locally"
 	@echo "  kind_config_generate         - Generate kind config for local registry"
