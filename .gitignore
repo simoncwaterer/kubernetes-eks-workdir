@@ -1,0 +1,5 @@
+# Ignore kind-config.yaml
+kind-config.yaml
+
+# Ignore Visual Studio Code workspace files
+*.code-workspace

@@ -1,0 +1,29 @@
+# Default values for explorecalifornia.
+# This is a YAML-formatted file.
+# Declare variables to be passed into your templates.
+
+appName: explorecalifornia-com
+
+image:
+  repository: localhost:6000/explorecalifornia.com
+  tag: latest
+  pullPolicy: IfNotPresent
+
+replicaCount: 1
+
+service:
+  type: ClusterIP
+  port: 80
+  targetPort: 80
+  name: explorecalifornia-svc
+  address: explorecalifornia.com
+
+ingress:
+  enabled: true
+  className: ""
+  host: explorecalifornia.com
+  path: /
+  pathType: Prefix
+
+nameOverride: ""
+fullnameOverride: ""

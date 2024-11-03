@@ -20,11 +20,22 @@ REGISTRY_PORT := 6000
 # Check if container is running
 CONTAINER_RUNNING := $(shell docker ps --format '{{.Names}}' | grep -q '^$(CONTAINER_NAME)$$' && echo 1 || echo 0)
 
+
+# Helm configuration
+HELM_CHARTS_DIR = /Users/swaterer/Development/linkedinLearning/kubernetes-eks-workdir/explorecalifornia
+HELM_RELEASE_NAME = explore-california-website
+HELM_NAMESPACE = default
+
+# Check if helm is installed
+HELM_INSTALLED := $(shell which helm 2>/dev/null)
+
+
+
 # Phony targets (targets that don't create files)
 .PHONY: help run_website stop_website status_website kind_install kind_cluster_create \
 	kind_cluster_delete registry-create registry-delete registry-status \
 	registry-test kind_config_generate kind_config_clean registry_connect push_website \
-	kind_install_ingress
+	kind_install_ingress helm_install helm_app_deploy
 
 run_website:
 ifeq ($(CONTAINER_RUNNING),1)
@@ -234,6 +245,44 @@ registry_kind_test:
 	@kubectl wait --for=condition=ready pod/nginx-test --timeout=60s
 	@echo "Test complete - nginx pod created successfully from local registry"
 
+
+#Install Helm if not present
+helm_install:
+ifndef HELM_INSTALLED
+	@echo "Installing Helm..."
+	@if command -v brew >/dev/null 2>&1; then \
+		brew install helm; \
+	else \
+		echo "Error: Homebrew not found. Please install Helm manually."; \
+		exit 1; \
+	fi
+	@echo "Helm installed successfully!"
+else
+	@echo "Helm is already installed at: $(HELM_INSTALLED)"
+	@helm version
+endif
+
+# Install/upgrade Helm chart
+helm_app_deploy: helm_install
+	@if ! kind get clusters 2>/dev/null | grep -q "^$(KIND_CLUSTER_NAME)$$"; then \
+		echo "Error: Kind cluster '$(KIND_CLUSTER_NAME)' not found. Please create it first with 'make kind_cluster_create'"; \
+		exit 1; \
+	fi
+	@echo "Checking if namespace exists..."
+	@if ! kubectl get namespace $(HELM_NAMESPACE) >/dev/null 2>&1; then \
+		echo "Creating namespace $(HELM_NAMESPACE)..."; \
+		kubectl create namespace $(HELM_NAMESPACE); \
+	fi
+	@echo "Deploying Helm chart from $(HELM_CHARTS_DIR)..."
+	helm upgrade --atomic --install $(HELM_RELEASE_NAME) $(HELM_CHARTS_DIR) \
+		--namespace $(HELM_NAMESPACE) \
+		--set image.repository=localhost:$(REGISTRY_PORT)/$(IMAGE_NAME) \
+		--set image.tag=latest \
+		--set service.port=$(CONTAINER_PORT) \
+		--wait
+	@echo "Helm deployment complete! Application should be available through the ingress."
+
+
 help:
 	@echo "Available targets:"
 	@echo "  run_website          - Build and run the website container"
@@ -250,4 +299,6 @@ help:
 	@echo "  registry_status     - Check registry status"
 	@echo "  registry_test	     - Test local docker registry"
 	@echo "  registry_kind_test  - Test kind cluster and docker local registry"
+	@echo "  helm_install        - Install Helm if not already installed"
+	@echo "  helm_app_deploy     - Deploy/upgrade the application using Helm"
 	@echo "  help                - Show this help message"
